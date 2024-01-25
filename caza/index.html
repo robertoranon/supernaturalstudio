@@ -1,0 +1,654 @@
+<html>
+	<head>
+		<title>Caza Demo</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+
+		<style>
+			html, body {
+				margin: 0;
+				padding: 0;
+				background-color: #111;
+			}
+
+			#loading {
+				position: absolute;
+				left: 50%;
+				top: 50%;
+				transform: translate(-50%, -50%);
+				color: white;
+				font-family: 'Courier New', Courier, monospace;
+			}
+
+			.checkerboard {
+				background-image:
+					linear-gradient(45deg, #222 25%, transparent 25%),
+					linear-gradient(-45deg, #222 25%, transparent 25%),
+					linear-gradient(45deg, transparent 75%, #222 75%),
+					linear-gradient(-45deg, transparent 75%, #222 75%);
+				background-size: 20px 20px;
+				background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+			}
+		</style>
+
+	</head>
+	<body>
+		<div id="loading">LOADING</div>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "./assets/three.module.min.js",
+					"three/addons/": "./assets/",
+					"pathtracer": "./assets/pathtracer.module.js",
+					"three-mesh-bvh": "./assets/three-mesh-bvh.module.js"
+				}
+			}
+		</script>
+
+
+		<script type="module">
+			window.MODEL_LIST = {
+				'Chair': {
+					url: './assets/chair-separate.glb',
+					credit: 'chair',
+				}
+			};
+		</script>
+		<script type="module">
+			import {
+				ACESFilmicToneMapping,
+				NoToneMapping,
+				Box3,
+				LoadingManager,
+				Sphere,
+				DoubleSide,
+				Mesh,
+				MeshStandardMaterial,
+				PlaneGeometry,
+				Group,
+				MeshPhysicalMaterial,
+				WebGLRenderer,
+				Scene,
+				PerspectiveCamera,
+				OrthographicCamera,
+				MeshBasicMaterial,
+				CustomBlending,
+				DataTexture,
+				RGBAFormat,
+				UnsignedByteType,
+				LinearFilter,
+				RepeatWrapping
+			} from 'three';
+			import { MeshoptDecoder } from 'three/addons/meshopt_decoder.module.js';
+			import { RGBELoader } from 'three/addons/RGBELoader.js';
+			import { GLTFLoader } from 'three/addons/GLTFLoader.js';
+			import { PathTracingSceneWorker, PhysicalPathTracingMaterial, PathTracingRenderer, MaterialReducer, BlurredEnvMapGenerator, GradientEquirectTexture } from 'pathtracer';
+			import { FullScreenQuad } from 'three/addons/Pass.js';
+			import { OrbitControls } from 'three/addons/OrbitControls.js';
+			
+			function isMobile() {
+				return ( isIpadOS() || isIOS() );
+			}
+			window.isMobile = isMobile;
+
+			function isIOS() {
+				if ( /iPad|iPhone|iPod/.test( navigator.platform ) ) {
+					return true;
+				} else {
+					return navigator.maxTouchPoints &&
+					navigator.maxTouchPoints > 2 &&
+					/MacIntel/.test( navigator.platform );
+				}
+			}
+
+			export function isIpadOS() {
+				return navigator.maxTouchPoints &&
+				navigator.maxTouchPoints > 2 &&
+				/MacIntel/.test( navigator.platform );
+			}
+
+
+			const envMaps = {
+				'Blocky Photo Studio': './assets/blocky_photo_studio_1k.hdr'
+			};
+
+			const models = window.MODEL_LIST || {};
+
+			const mobileDevice = isMobile();
+
+			console.log( mobileDevice ? 'mobile device' : 'desktop device' );
+
+			let initialModel = Object.keys( models )[ 0 ];
+			if ( window.location.hash ) {
+
+				const modelName = window.location.hash.substring( 1 ).replaceAll( '%20', ' ' );
+				if ( modelName in models ) {
+
+					initialModel = modelName;
+
+				}
+
+			}
+
+			const params = {
+				maxSamples: 200,
+				multipleImportanceSampling: true,
+				acesToneMapping: true,
+				resolutionScale: mobileDevice ? 1 / window.devicePixelRatio : 1,
+				tilesX: 1,
+				tilesY: 1,
+				samplesPerFrame: 1,
+				model: initialModel,
+				envMap: envMaps[ 'Blocky Photo Studio' ],
+
+				gradientTop: '#bfd8ff',
+				gradientBottom: '#ffffff',
+
+				environmentIntensity: 1.5,
+				environmentBlur: 0.5,
+				environmentRotation: 0,
+				cameraProjection: 'Perspective',
+
+				backgroundType: 'Gradient',
+				bgGradientTop: '#444444',
+				bgGradientBottom: '#000000',
+				backgroundAlpha: 1.0,
+				checkerboardTransparency: false,
+
+				enable: true,
+				bounces: 4,
+				filterGlossyFactor: 0.5,
+				pause: false,
+
+				floorColor: '#111111',
+				floorOpacity: 1.0,
+				floorRoughness: 0.2,
+				floorMetalness: 0.2,
+
+				crossFadeFrames: 20,
+
+			};
+
+			let loadingEl;
+			let floorPlane, gui, stats, sceneInfo;
+			let renderer, orthoCamera, perspectiveCamera, activeCamera;
+			let ptRenderer, fsQuad, controls, scene;
+			let envMap, envMapGenerator, backgroundMap;
+			let loadingModel = false;
+			let delaySamples = 0;
+
+			const orthoWidth = 2;
+
+			init();
+
+			async function init() {
+
+				loadingEl = document.getElementById( 'loading' );
+
+				renderer = new WebGLRenderer( { antialias: true } );
+				renderer.toneMapping = ACESFilmicToneMapping;
+				renderer.physicallyCorrectLights = true;
+				document.body.appendChild( renderer.domElement );
+
+				scene = new Scene();
+
+				const aspect = window.innerWidth / window.innerHeight;
+				perspectiveCamera = new PerspectiveCamera( 30, aspect, 0.025, 500 );
+				perspectiveCamera.position.set( 1, 1.5, 3 );
+
+				const orthoHeight = orthoWidth / aspect;
+				orthoCamera = new OrthographicCamera( orthoWidth / - 2, orthoWidth / 2, orthoHeight / 2, orthoHeight / - 2, 0, 100 );
+				orthoCamera.position.set( - 1, 0.25, 1 );
+
+				backgroundMap = new GradientEquirectTexture();
+				backgroundMap.topColor.set( params.bgGradientTop );
+				backgroundMap.bottomColor.set( params.bgGradientBottom );
+				backgroundMap.update();
+
+				ptRenderer = new PathTracingRenderer( renderer );
+				ptRenderer.alpha = true;
+				ptRenderer.material = new PhysicalPathTracingMaterial();
+				ptRenderer.tiles.set( params.tiles, params.tiles );
+				ptRenderer.material.setDefine( 'FEATURE_MIS', Number( params.multipleImportanceSampling ) );
+				ptRenderer.material.backgroundMap = backgroundMap;
+				ptRenderer.material.transmissiveBounces = 10;
+
+				fsQuad = new FullScreenQuad( new MeshBasicMaterial( {
+					map: ptRenderer.target.texture,
+					blending: CustomBlending,
+					premultipliedAlpha: renderer.getContextAttributes().premultipliedAlpha,
+				} ) );
+
+				fsQuad.material.opacity = 0.2;
+				fsQuad.material.transparent = true;
+
+				controls = new OrbitControls( perspectiveCamera, renderer.domElement );
+				controls.addEventListener( 'change', resetRenderer );
+
+				envMapGenerator = new BlurredEnvMapGenerator( renderer );
+
+				const floorTex = generateRadialFloorTexture( 2048 );
+				floorPlane = new Mesh(
+					new PlaneGeometry(),
+					new MeshStandardMaterial( {
+						map: floorTex,
+						transparent: true,
+						color: 0x111111,
+						roughness: 0.1,
+						metalness: 0.0,
+						side: DoubleSide,
+					} )
+				);
+				floorPlane.scale.setScalar( 5 );
+				floorPlane.rotation.x = - Math.PI / 2;
+
+				//stats = new Stats();
+				//document.body.appendChild( stats.dom );
+				scene.background = backgroundMap;
+				ptRenderer.tiles.set( params.tilesX, params.tilesY );
+
+				updateCamera( params.cameraProjection );
+				updateModel();
+				updateEnvMap();
+				onResize();
+
+				animate();
+
+				window.addEventListener( 'resize', onResize );
+
+			}
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+
+				//stats.update();
+
+				if ( loadingModel ) {
+
+					return;
+
+				}
+
+				floorPlane.material.color.set( params.floorColor );
+				floorPlane.material.roughness = params.floorRoughness;
+				floorPlane.material.metalness = params.floorMetalness;
+				floorPlane.material.opacity = params.floorOpacity;
+
+				if ( ptRenderer.samples < params.crossFadeFrames || ! params.enable ) {
+
+					renderer.render( scene, activeCamera );
+					fsQuad.material.opacity = Math.min ( 1.0, fsQuad.material.opacity + 0.9 / params.crossFadeFrames );
+				}
+
+				if ( params.enable && delaySamples === 0 && ptRenderer.samples <= params.maxSamples ) {
+
+					const samples = Math.floor( ptRenderer.samples );
+
+					ptRenderer.material.materials.updateFrom( sceneInfo.materials, sceneInfo.textures );
+					ptRenderer.material.filterGlossyFactor = params.filterGlossyFactor;
+					ptRenderer.material.environmentIntensity = params.environmentIntensity;
+					ptRenderer.material.bounces = params.bounces;
+					ptRenderer.material.physicalCamera.updateFrom( activeCamera );
+
+					activeCamera.updateMatrixWorld();
+
+					if ( ! params.pause || ptRenderer.samples < 1 ) {
+
+						for ( let i = 0, l = params.samplesPerFrame; i < l; i ++ ) {
+
+							ptRenderer.update();
+
+						}
+
+					}
+
+					renderer.autoClear = false;
+					fsQuad.render( renderer );
+					renderer.autoClear = true;
+
+				} else if ( delaySamples > 0 ) {
+
+					delaySamples --;
+
+				}
+
+			}
+
+			function resetRenderer() {
+
+				if ( params.tilesX * params.tilesY !== 1.0 ) {
+
+					delaySamples = 1;
+
+				}
+
+				delaySamples = 1; // this enables three.js standard rendering when the camera is moving
+				fsQuad.material.opacity = 0.1;
+				ptRenderer.reset();
+
+			}
+
+			function onResize() {
+
+				const w = window.innerWidth;
+				const h = window.innerHeight;
+				const scale = params.resolutionScale;
+				const dpr = window.devicePixelRatio;
+
+				ptRenderer.setSize( w * scale * dpr, h * scale * dpr );
+				ptRenderer.reset();
+
+				renderer.setSize( w, h );
+				renderer.setPixelRatio( window.devicePixelRatio * scale );
+
+				const aspect = w / h;
+				perspectiveCamera.aspect = aspect;
+				perspectiveCamera.updateProjectionMatrix();
+
+				const orthoHeight = orthoWidth / aspect;
+				orthoCamera.top = orthoHeight / 2;
+				orthoCamera.bottom = orthoHeight / - 2;
+				orthoCamera.updateProjectionMatrix();
+
+			}
+
+			function updateEnvMap() {
+
+				new RGBELoader()
+					.load( params.envMap, texture => {
+
+						if ( scene.environmentMap ) {
+
+							scene.environment.dispose();
+							envMap.dispose();
+
+						}
+
+						envMap = texture;
+						updateEnvBlur();
+						ptRenderer.reset();
+
+					} );
+
+			}
+
+			function updateEnvBlur() {
+
+				const blurredEnvMap = envMapGenerator.generate( envMap, params.environmentBlur );
+				ptRenderer.material.envMapInfo.updateFrom( blurredEnvMap );
+
+				scene.environment = blurredEnvMap;
+				if ( params.backgroundType !== 'Gradient' ) {
+
+					scene.background = blurredEnvMap;
+
+				}
+
+			}
+
+			function updateCamera( cameraProjection ) {
+
+				if ( cameraProjection === 'Perspective' ) {
+
+					if ( activeCamera ) {
+
+						perspectiveCamera.position.copy( activeCamera.position );
+
+					}
+
+					activeCamera = perspectiveCamera;
+
+				} else {
+
+					if ( activeCamera ) {
+
+						orthoCamera.position.copy( activeCamera.position );
+
+					}
+
+					activeCamera = orthoCamera;
+
+				}
+
+				controls.object = activeCamera;
+				ptRenderer.camera = activeCamera;
+
+				controls.update();
+
+				resetRenderer();
+
+			}
+
+			async function updateModel() {
+
+				if ( gui ) {
+
+					document.body.classList.remove( 'checkerboard' );
+					gui.destroy();
+					gui = null;
+
+				}
+
+				let model;
+				const manager = new LoadingManager();
+				const modelInfo = models[ params.model ];
+
+				loadingModel = true;
+				renderer.domElement.style.visibility = 'hidden';
+				loadingEl.innerText = 'Loading';
+				loadingEl.style.visibility = 'visible';
+
+				scene.traverse( c => {
+
+					if ( c.material ) {
+
+						const material = c.material;
+						for ( const key in material ) {
+
+							if ( material[ key ] && material[ key ].isTexture ) {
+
+								material[ key ].dispose();
+
+							}
+
+						}
+
+					}
+
+				} );
+
+				if ( sceneInfo ) {
+
+					scene.remove( sceneInfo.scene );
+
+				}
+
+
+				const onFinish = async () => {
+
+					if ( modelInfo.removeEmission ) {
+
+						model.traverse( c => {
+
+							if ( c.material ) {
+
+								c.material.emissiveMap = null;
+								c.material.emissiveIntensity = 0;
+
+							}
+
+						} );
+
+					}
+
+					model.traverse( c => {
+
+						if ( c.material ) {
+
+							// set the thickness so we render the material as a volumetric object
+							//c.material.thickness = 1.0;
+
+						}
+
+					} );
+
+					if ( modelInfo.postProcess ) {
+
+						modelInfo.postProcess( model );
+
+					}
+
+					// rotate model after so it doesn't affect the bounding sphere scale
+					if ( modelInfo.rotation ) {
+
+						model.rotation.set( ...modelInfo.rotation );
+
+					}
+
+					// center the model
+					const box = new Box3();
+					box.setFromObject( model );
+					model.position
+						.addScaledVector( box.min, - 0.5 )
+						.addScaledVector( box.max, - 0.5 );
+
+					const sphere = new Sphere();
+					box.getBoundingSphere( sphere );
+
+					model.scale.setScalar( 1 / sphere.radius );
+					model.position.multiplyScalar( 1 / sphere.radius );
+
+					box.setFromObject( model );
+
+					model.updateMatrixWorld();
+
+					const group = new Group();
+					floorPlane.position.y = box.min.y;
+					group.add( model, floorPlane );
+
+					const reducer = new MaterialReducer();
+					reducer.process( group );
+
+					const generator = new PathTracingSceneWorker();
+					const result = await generator.generate( group, { onProgress: v => {
+
+						const percent = 50 + Math.floor( 50 * v  );
+						loadingEl.innerText = `Loading : ${ percent }%`;
+
+					} } );
+
+					sceneInfo = result;
+					scene.add( sceneInfo.scene );
+
+					const { bvh, textures, materials, lights } = result;
+					const geometry = bvh.geometry;
+					const material = ptRenderer.material;
+
+					material.bvh.updateFrom( bvh );
+					material.attributesArray.updateFrom(
+						geometry.attributes.normal,
+						geometry.attributes.tangent,
+						geometry.attributes.uv,
+						geometry.attributes.color,
+					);
+					material.materialIndexAttribute.updateFrom( geometry.attributes.materialIndex );
+
+					const textureSize = isIOS() ? 1024 : 2048;
+					console.log( 'textureSize: ' + textureSize );
+
+					material.textures.setTextures( renderer, textureSize, textureSize, textures );
+					material.materials.updateFrom( materials, textures );
+					material.lights.updateFrom( lights );
+
+					generator.dispose();
+
+					loadingEl.style.visibility = 'hidden';
+
+					backgroundMap.topColor.set( params.bgGradientTop );
+					backgroundMap.bottomColor.set( params.bgGradientBottom );
+					backgroundMap.update();
+
+					loadingModel = false;
+					renderer.domElement.style.visibility = 'visible';
+					if ( params.checkerboardTransparency ) {
+
+						document.body.classList.add( 'checkerboard' );
+
+					}
+
+					ptRenderer.reset();
+
+				};
+
+				const url = modelInfo.url;
+				if ( /(gltf|glb)$/i.test( url ) ) {
+
+					manager.onLoad = onFinish;
+					new GLTFLoader( manager )
+						.setMeshoptDecoder( MeshoptDecoder )
+						.load(
+							url,
+							gltf => {
+
+								model = gltf.scene;
+
+							},
+							progress => {
+
+								if ( progress.total !== 0 && progress.total >= progress.loaded ) {
+
+									const percent = Math.floor( 50 * progress.loaded / progress.total );
+									loadingEl.innerText = `Loading : ${ percent }%`;
+
+								}
+
+							},
+						);
+
+				} 
+
+			}
+
+			function generateRadialFloorTexture( dim ) {
+
+				const data = new Uint8Array( dim * dim * 4 );
+
+				for ( let x = 0; x < dim; x ++ ) {
+
+					for ( let y = 0; y < dim; y ++ ) {
+
+						const xNorm = x / ( dim - 1 );
+						const yNorm = y / ( dim - 1 );
+
+						const xCent = 2.0 * ( xNorm - 0.5 );
+						const yCent = 2.0 * ( yNorm - 0.5 );
+						let a = Math.max( Math.min( 1.0 - Math.sqrt( xCent ** 2 + yCent ** 2 ), 1.0 ), 0.0 );
+						a = a ** 2;
+						a = a * 1.5;
+						a = Math.min( a, 1.0 );
+
+						const i = y * dim + x;
+						data[ i * 4 + 0 ] = 255;
+						data[ i * 4 + 1 ] = 255;
+						data[ i * 4 + 2 ] = 255;
+						data[ i * 4 + 3 ] = a * 255;
+
+					}
+
+				}
+
+				const tex = new DataTexture( data, dim, dim );
+				tex.format = RGBAFormat;
+				tex.type = UnsignedByteType;
+				tex.minFilter = LinearFilter;
+				tex.magFilter = LinearFilter;
+				tex.wrapS = RepeatWrapping;
+				tex.wrapT = RepeatWrapping;
+				tex.needsUpdate = true;
+				return tex;
+
+			}
+
+		</script>
+	</body>
+</html>
