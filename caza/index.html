@@ -110,6 +110,8 @@
 
 
 			const envMaps = {
+				'kloppenheim' : './assets/kloppenheim_05_1k.hdr',
+				'Brown Photo Studio' : './assets/brown_photostudio_07_2k.hdr',
 				'Blocky Photo Studio': './assets/blocky_photo_studio_1k.hdr'
 			};
 
@@ -140,12 +142,12 @@
 				tilesY: 1,
 				samplesPerFrame: 1,
 				model: initialModel,
-				envMap: envMaps[ 'Blocky Photo Studio' ],
+				envMap: envMaps[ 'kloppenheim' ],
 
 				gradientTop: '#bfd8ff',
 				gradientBottom: '#ffffff',
 
-				environmentIntensity: 1.5,
+				environmentIntensity: 2,
 				environmentBlur: 0.5,
 				environmentRotation: 0,
 				cameraProjection: 'Perspective',
@@ -162,9 +164,9 @@
 				pause: false,
 
 				floorColor: '#111111',
-				floorOpacity: 1.0,
-				floorRoughness: 0.2,
-				floorMetalness: 0.2,
+				floorOpacity: 0.8,
+				floorRoughness: 0.9,
+				floorMetalness: 0,
 
 				crossFadeFrames: 20,
 
